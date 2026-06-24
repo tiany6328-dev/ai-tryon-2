@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 export const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 
 export const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
@@ -17,5 +19,5 @@ export function validateImageFile(file: File): string | null {
 export function getSafeUploadName(file: File) {
   const extension = file.name.split(".").pop()?.toLowerCase() || "jpg";
   const safeExtension = ["jpg", "jpeg", "png", "webp"].includes(extension) ? extension : "jpg";
-  return `tryon/${crypto.randomUUID()}.${safeExtension}`;
+  return `tryon/${randomUUID()}.${safeExtension}`;
 }
