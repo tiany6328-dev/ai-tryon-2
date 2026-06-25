@@ -5,23 +5,6 @@ import { Loader2, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { ImageUploader } from "@/components/ImageUploader";
 
-async function uploadImage(file: File) {
-  const formData = new FormData();
-  formData.append("file", file);
-
-  const response = await fetch("/api/upload", {
-    method: "POST",
-    body: formData
-  });
-
-  const data = (await response.json()) as { url?: string; error?: string };
-
-  if (!response.ok || !data.url) {
-    throw new Error(data.error || "图片上传失败。");
-  }
-
-  return data.url;
-}
 
 export default function Home() {
   const [modelFile, setModelFile] = useState<File | null>(null);
@@ -41,17 +24,13 @@ export default function Home() {
     setResultUrl("");
 
     try {
-      const [modelImageUrl, garmentImageUrl] = await Promise.all([
-        uploadImage(modelFile),
-        uploadImage(garmentFile)
-      ]);
+      const formData = new FormData();
+      formData.append("modelImage", modelFile);
+      formData.append("garmentImage", garmentFile);
 
       const response = await fetch("/api/tryon", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ modelImageUrl, garmentImageUrl })
+        body: formData
       });
 
       const data = (await response.json()) as { resultUrl?: string; error?: string };
