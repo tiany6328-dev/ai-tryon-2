@@ -1,4 +1,4 @@
-import Fashn from "fashn";
+import { fal } from "@fal-ai/client";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -9,34 +9,63 @@ type TryonRequest = {
   garmentImageUrl?: string;
 };
 
-function normalizeOutput(output: unknown): string | null {
-  if (typeof output === "string") {
-    return output;
-  }
+type FalTryonResult = {
+  images?: Array<{
+    url?: string;
+  }>;
+};
 
-  if (Array.isArray(output)) {
-    const first = output[0];
+function getErrorStatus(error: unknown) {
+  if (error && typeof error === "object") {
+    const maybeStatus = (error as { status?: unknown; statusCode?: unknown }).status;
+    const maybeStatusCode = (error as { status?: unknown; statusCode?: unknown }).statusCode;
 
-    if (typeof first === "string") {
-      return first;
+    if (typeof maybeStatus === "number") {
+      return maybeStatus;
     }
 
-    if (first && typeof first === "object") {
-      const maybeUrl = (first as { url?: unknown }).url;
-      return typeof maybeUrl === "string" ? maybeUrl : null;
+    if (typeof maybeStatusCode === "number") {
+      return maybeStatusCode;
     }
   }
 
-  return null;
+  return undefined;
+}
+
+function getErrorDetail(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return "";
+  }
+
+  const possibleError = error as {
+    body?: unknown;
+    detail?: unknown;
+    response?: {
+      body?: unknown;
+      detail?: unknown;
+    };
+  };
+
+  const detail =
+    possibleError.detail ||
+    possibleError.response?.detail ||
+    (possibleError.body &&
+      typeof possibleError.body === "object" &&
+      (possibleError.body as { detail?: unknown }).detail) ||
+    (possibleError.response?.body &&
+      typeof possibleError.response.body === "object" &&
+      (possibleError.response.body as { detail?: unknown }).detail);
+
+  return typeof detail === "string" ? detail : "";
 }
 
 export async function POST(request: Request) {
   try {
-    const apiKey = process.env.FASHN_API_KEY;
+    const apiKey = process.env.FAL_KEY;
 
     if (!apiKey) {
       return NextResponse.json(
-        { error: "缺少 FASHN_API_KEY，请先在 .env.local 中配置。" },
+        { error: "Missing FAL_KEY. Please configure it in your server environment." },
         { status: 500 }
       );
     }
@@ -44,27 +73,35 @@ export async function POST(request: Request) {
     const body = (await request.json()) as TryonRequest;
 
     if (!body.modelImageUrl || !body.garmentImageUrl) {
-      return NextResponse.json({ error: "缺少人像图片 URL 或衣服图片 URL。" }, { status: 400 });
+      return NextResponse.json({ error: "Missing model image URL or garment image URL." }, { status: 400 });
     }
 
-    const client = new Fashn({ apiKey });
+    fal.config({
+      credentials: apiKey
+    });
 
-    const prediction = await client.predictions.subscribe({
-      model_name: "tryon-v1.6",
-      inputs: {
+    const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
+      input: {
         model_image: body.modelImageUrl,
         garment_image: body.garmentImageUrl,
-        category: "auto"
+        category: "auto",
+        mode: "balanced",
+        garment_photo_type: "auto",
+        moderation_level: "permissive",
+        num_samples: 1,
+        segmentation_free: true,
+        output_format: "png"
       }
-    } as Parameters<typeof client.predictions.subscribe>[0]);
+    });
 
-    const resultUrl = normalizeOutput(prediction.output);
+    const data = result.data as FalTryonResult;
+    const resultUrl = data.images?.[0]?.url;
 
     if (!resultUrl) {
       return NextResponse.json(
         {
-          error: "FASHN 已返回结果，但没有找到可展示的图片 URL。",
-          raw: prediction
+          error: "fal.ai returned a result, but no output image URL was found.",
+          raw: result.data
         },
         { status: 502 }
       );
@@ -72,11 +109,20 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ resultUrl });
   } catch (error) {
-    console.error("FASHN try-on failed:", error);
+    console.error("fal.ai try-on failed:", error);
 
-    const message =
-      error instanceof Error ? error.message : "生成失败，请检查图片和 API Key 后重试。";
+    const status = getErrorStatus(error);
+    const originalMessage = error instanceof Error ? error.message : "";
+    const detail = getErrorDetail(error);
+    const combinedMessage = [detail, originalMessage].filter(Boolean).join(" ");
+    const isExhaustedBalance = /exhausted balance|top up your balance/i.test(combinedMessage);
+    const isForbidden = status === 403 || /forbidden/i.test(combinedMessage);
+    const message = isForbidden
+      ? isExhaustedBalance
+        ? "fal.ai returned Forbidden (403): your fal.ai balance is exhausted. Please top up your balance at fal.ai/dashboard/billing, then try again."
+        : "fal.ai returned Forbidden (403). Please check that FAL_KEY is a valid fal.ai key, your fal.ai account has credits, and the key has permission to run fal-ai/fashn/tryon/v1.6."
+      : detail || originalMessage || "Generation failed. Please check your images and FAL_KEY.";
 
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: message }, { status: status || 500 });
   }
 }

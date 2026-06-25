@@ -135,7 +135,7 @@ export default function Home() {
             <div className="flex items-center justify-between gap-4">
               <div>
                 <h2 className="text-base font-semibold">生成结果</h2>
-                <p className="mt-1 text-sm text-white/58">FASHN tryon-v1.6</p>
+                <p className="mt-1 text-sm text-white/58">fal.ai FASHN v1.6</p>
               </div>
               <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white/75">
                 Preview

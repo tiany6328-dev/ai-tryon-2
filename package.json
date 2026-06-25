@@ -9,8 +9,8 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@fal-ai/client": "^1.7.0",
     "@supabase/supabase-js": "^2.50.0",
-    "fashn": "latest",
     "lucide-react": "^0.475.0",
     "next": "latest",
     "react": "latest",
