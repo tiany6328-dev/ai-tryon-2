@@ -1,4 +1,3 @@
-import { fal } from "@fal-ai/client";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -9,54 +8,69 @@ type TryonRequest = {
   garmentImageUrl?: string;
 };
 
+type FalQueueResponse = {
+  request_id?: string;
+  status_url?: string;
+  response_url?: string;
+  status?: string;
+};
+
 type FalTryonResult = {
   images?: Array<{
     url?: string;
   }>;
 };
 
-function getErrorStatus(error: unknown) {
-  if (error && typeof error === "object") {
-    const maybeStatus = (error as { status?: unknown; statusCode?: unknown }).status;
-    const maybeStatusCode = (error as { status?: unknown; statusCode?: unknown }).statusCode;
+async function readFalError(response: Response) {
+  const text = await response.text();
 
-    if (typeof maybeStatus === "number") {
-      return maybeStatus;
-    }
-
-    if (typeof maybeStatusCode === "number") {
-      return maybeStatusCode;
-    }
+  try {
+    const data = JSON.parse(text) as { detail?: unknown; error?: unknown };
+    const detail = data.detail || data.error;
+    return typeof detail === "string" ? detail : text;
+  } catch {
+    return text;
   }
-
-  return undefined;
 }
 
-function getErrorDetail(error: unknown) {
-  if (!error || typeof error !== "object") {
-    return "";
+async function waitForFalResult(statusUrl: string, responseUrl: string, apiKey: string) {
+  for (let attempt = 0; attempt < 45; attempt += 1) {
+    const statusResponse = await fetch(statusUrl, {
+      headers: {
+        Authorization: `Key ${apiKey}`
+      },
+      cache: "no-store"
+    });
+
+    if (!statusResponse.ok) {
+      throw new Error(await readFalError(statusResponse));
+    }
+
+    const statusData = (await statusResponse.json()) as { status?: string };
+
+    if (statusData.status === "COMPLETED") {
+      const resultResponse = await fetch(responseUrl, {
+        headers: {
+          Authorization: `Key ${apiKey}`
+        },
+        cache: "no-store"
+      });
+
+      if (!resultResponse.ok) {
+        throw new Error(await readFalError(resultResponse));
+      }
+
+      return (await resultResponse.json()) as FalTryonResult;
+    }
+
+    if (statusData.status === "FAILED") {
+      throw new Error("fal.ai generation failed. Please check your images and FAL_KEY.");
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 
-  const possibleError = error as {
-    body?: unknown;
-    detail?: unknown;
-    response?: {
-      body?: unknown;
-      detail?: unknown;
-    };
-  };
-
-  const detail =
-    possibleError.detail ||
-    possibleError.response?.detail ||
-    (possibleError.body &&
-      typeof possibleError.body === "object" &&
-      (possibleError.body as { detail?: unknown }).detail) ||
-    (possibleError.response?.body &&
-      typeof possibleError.response.body === "object" &&
-      (possibleError.response.body as { detail?: unknown }).detail);
-
-  return typeof detail === "string" ? detail : "";
+  throw new Error("fal.ai generation timed out. Please try again.");
 }
 
 export async function POST(request: Request) {
@@ -76,12 +90,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Missing model image URL or garment image URL." }, { status: 400 });
     }
 
-    fal.config({
-      credentials: apiKey
-    });
-
-    const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
-      input: {
+    const submitResponse = await fetch("https://queue.fal.run/fal-ai/fashn/tryon/v1.6", {
+      method: "POST",
+      headers: {
+        Authorization: `Key ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
         model_image: body.modelImageUrl,
         garment_image: body.garmentImageUrl,
         category: "auto",
@@ -91,18 +106,37 @@ export async function POST(request: Request) {
         num_samples: 1,
         segmentation_free: true,
         output_format: "png"
-      }
+      })
     });
 
-    const data = result.data as FalTryonResult;
-    const resultUrl = data.images?.[0]?.url;
+    if (!submitResponse.ok) {
+      const detail = await readFalError(submitResponse);
+      const isExhaustedBalance = /exhausted balance|top up your balance/i.test(detail);
+      const message =
+        submitResponse.status === 403
+          ? isExhaustedBalance
+            ? "fal.ai returned Forbidden (403): your fal.ai balance is exhausted. Please top up your balance at fal.ai/dashboard/billing, then try again."
+            : "fal.ai returned Forbidden (403). Please check that FAL_KEY is valid, your fal.ai account has credits, and the key can run fal-ai/fashn/tryon/v1.6."
+          : detail || "fal.ai request failed.";
+
+      return NextResponse.json({ error: message }, { status: submitResponse.status });
+    }
+
+    const queueData = (await submitResponse.json()) as FalQueueResponse;
+
+    if (!queueData.status_url || !queueData.response_url) {
+      return NextResponse.json(
+        { error: "fal.ai did not return queue URLs.", raw: queueData },
+        { status: 502 }
+      );
+    }
+
+    const result = await waitForFalResult(queueData.status_url, queueData.response_url, apiKey);
+    const resultUrl = result.images?.[0]?.url;
 
     if (!resultUrl) {
       return NextResponse.json(
-        {
-          error: "fal.ai returned a result, but no output image URL was found.",
-          raw: result.data
-        },
+        { error: "fal.ai returned a result, but no output image URL was found.", raw: result },
         { status: 502 }
       );
     }
@@ -111,18 +145,8 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error("fal.ai try-on failed:", error);
 
-    const status = getErrorStatus(error);
-    const originalMessage = error instanceof Error ? error.message : "";
-    const detail = getErrorDetail(error);
-    const combinedMessage = [detail, originalMessage].filter(Boolean).join(" ");
-    const isExhaustedBalance = /exhausted balance|top up your balance/i.test(combinedMessage);
-    const isForbidden = status === 403 || /forbidden/i.test(combinedMessage);
-    const message = isForbidden
-      ? isExhaustedBalance
-        ? "fal.ai returned Forbidden (403): your fal.ai balance is exhausted. Please top up your balance at fal.ai/dashboard/billing, then try again."
-        : "fal.ai returned Forbidden (403). Please check that FAL_KEY is a valid fal.ai key, your fal.ai account has credits, and the key has permission to run fal-ai/fashn/tryon/v1.6."
-      : detail || originalMessage || "Generation failed. Please check your images and FAL_KEY.";
+    const message = error instanceof Error ? error.message : "Generation failed. Please check your images and FAL_KEY.";
 
-    return NextResponse.json({ error: message }, { status: status || 500 });
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
