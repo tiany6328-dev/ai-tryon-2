@@ -66,6 +66,36 @@ function getErrorDetail(error: unknown) {
   return typeof detail === "string" ? detail : "";
 }
 
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    const cause = error.cause instanceof Error ? ` Cause: ${error.cause.message}` : "";
+    return `${error.message}${cause}`;
+  }
+
+  return typeof error === "string" ? error : "";
+}
+
+async function uploadFileToFalStorage(file: File, label: string) {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await fal.storage.upload(file);
+    } catch (error) {
+      lastError = error;
+
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+      }
+    }
+  }
+
+  const detail = getErrorDetail(lastError);
+  const message = detail || getErrorMessage(lastError) || "fetch failed";
+
+  throw new Error(`Failed to upload ${label} to fal.ai storage: ${message}`);
+}
+
 export async function POST(request: Request) {
   try {
     const apiKey = process.env.FAL_KEY;
@@ -99,10 +129,8 @@ export async function POST(request: Request) {
       credentials: apiKey
     });
 
-    const [modelImageUrl, garmentImageUrl] = await Promise.all([
-      fal.storage.upload(modelImage),
-      fal.storage.upload(garmentImage)
-    ]);
+    const modelImageUrl = await uploadFileToFalStorage(modelImage, "model image");
+    const garmentImageUrl = await uploadFileToFalStorage(garmentImage, "garment image");
 
     const result = await fal.subscribe("fal-ai/fashn/tryon/v1.6", {
       input: {
@@ -133,7 +161,7 @@ export async function POST(request: Request) {
     console.error("fal.ai try-on failed:", error);
 
     const status = getErrorStatus(error);
-    const originalMessage = error instanceof Error ? error.message : "";
+    const originalMessage = getErrorMessage(error);
     const detail = getErrorDetail(error);
     const combinedMessage = [detail, originalMessage].filter(Boolean).join(" ");
     const isExhaustedBalance = /exhausted balance|top up your balance/i.test(combinedMessage);

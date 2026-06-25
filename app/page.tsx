@@ -5,6 +5,53 @@ import { Loader2, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { ImageUploader } from "@/components/ImageUploader";
 
+const MAX_UPLOAD_DIMENSION = 1600;
+const JPEG_QUALITY = 0.9;
+
+async function prepareImageForTryOn(file: File) {
+  const imageUrl = URL.createObjectURL(file);
+
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = document.createElement("img");
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Image compression failed. Please choose another image."));
+      img.src = imageUrl;
+    });
+
+    const scale = Math.min(1, MAX_UPLOAD_DIMENSION / Math.max(image.naturalWidth, image.naturalHeight));
+
+    if (scale >= 1 && file.size <= 4 * 1024 * 1024) {
+      return file;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return file;
+    }
+
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, "image/jpeg", JPEG_QUALITY);
+    });
+
+    if (!blob) {
+      return file;
+    }
+
+    return new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), { type: "image/jpeg" });
+  } finally {
+    URL.revokeObjectURL(imageUrl);
+  }
+}
+
 
 export default function Home() {
   const [modelFile, setModelFile] = useState<File | null>(null);
@@ -24,9 +71,14 @@ export default function Home() {
     setResultUrl("");
 
     try {
+      const [preparedModelFile, preparedGarmentFile] = await Promise.all([
+        prepareImageForTryOn(modelFile),
+        prepareImageForTryOn(garmentFile)
+      ]);
+
       const formData = new FormData();
-      formData.append("modelImage", modelFile);
-      formData.append("garmentImage", garmentFile);
+      formData.append("modelImage", preparedModelFile);
+      formData.append("garmentImage", preparedGarmentFile);
 
       const response = await fetch("/api/tryon", {
         method: "POST",
