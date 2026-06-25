@@ -58,32 +58,6 @@ export async function POST(request: Request) {
       }
     });
 
-    const { data: bucketInfo, error: bucketError } = await supabase.storage.getBucket(resolvedBucket);
-
-    if (bucketError) {
-      const { error: createBucketError } = await supabase.storage.createBucket(resolvedBucket, {
-        public: true,
-        allowedMimeTypes: ["image/jpeg", "image/png", "image/webp"],
-        fileSizeLimit: 10 * 1024 * 1024
-      });
-
-      if (createBucketError) {
-        return NextResponse.json(
-          {
-            error: `Cannot access or create Supabase bucket "${resolvedBucket}": ${createBucketError.message}. Check SUPABASE_BUCKET, SUPABASE_SERVICE_ROLE_KEY, and Storage permissions.`
-          },
-          { status: 500 }
-        );
-      }
-    } else if (!bucketInfo.public) {
-      return NextResponse.json(
-        {
-          error: `Supabase bucket "${resolvedBucket}" exists but is private. Please make it public so fal.ai can read uploaded images.`
-        },
-        { status: 500 }
-      );
-    }
-
     const path = getSafeUploadName(file);
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
@@ -95,12 +69,7 @@ export async function POST(request: Request) {
 
     if (uploadError) {
       console.error("Supabase upload failed:", uploadError);
-      return NextResponse.json(
-        {
-          error: `Supabase upload failed: ${uploadError.message}. Check bucket name, service role key, and storage permissions.`
-        },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: uploadError.message }, { status: 500 });
     }
 
     const { data } = supabase.storage.from(resolvedBucket).getPublicUrl(path);
